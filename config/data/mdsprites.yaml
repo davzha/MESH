@@ -1,0 +1,10 @@
+resolution: [64, 64]
+num_data_workers: 4
+path: "data/object_discovery/mdsprites.h5"
+train_split: [0, 60000]
+val_split: [60000, 60320]
+test_split: [60320, 63200]
+max_objects: 5
+train_preload: True
+val_preload: True
+test_preload: True

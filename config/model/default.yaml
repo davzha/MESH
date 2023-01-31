@@ -1,0 +1,12 @@
+defaults:
+  - slot_attention: mesh
+
+encoder:
+  d_hid: 32
+  d_out: 32
+  resolution: [64, 64]
+
+decoder:
+  broadcast_resolution: [64, 64]
+  d_in: ${model.slot_attention.d_slot}
+  d_hid: 32

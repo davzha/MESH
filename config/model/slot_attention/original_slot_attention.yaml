@@ -1,0 +1,10 @@
+attention_type: original_slot_attention
+pairwise_distance: dot_prod
+
+d_in: ${model.encoder.d_out}
+d_slot: 64
+d_mlp: 128
+n_slots: ${add:${data.max_objects},1}
+n_sa_iters: 3
+init_slot_method: learned_random
+detach_slots: False

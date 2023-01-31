@@ -1,0 +1,13 @@
+attention_type: sinkhorn
+pairwise_distance: l2
+
+d_in: ${model.encoder.d_out}
+d_slot: 64
+d_mlp: 128
+n_slots: ${add:${data.max_objects},1}
+n_sa_iters: 3
+n_sh_iters: 5
+init_slot_method: learned_random
+scale_marginals: ${model.slot_attention.n_slots}
+temperature: 1
+detach_slots: False

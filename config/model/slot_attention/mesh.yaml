@@ -1,0 +1,20 @@
+attention_type: mesh
+pairwise_distance: l2
+
+d_in: ${model.encoder.d_out}
+d_slot: 64
+d_mlp: 128
+n_slots: ${add:${data.max_objects},1}
+n_sa_iters: 3
+n_sh_iters: 5
+init_slot_method: learned_random
+learn_mesh_lr: False
+mesh_lr: 8
+scale_marginals: ${model.slot_attention.n_slots}
+temperature: 1
+detach_slots: False
+
+mesh_args:
+  n_sh_iters: ${model.slot_attention.n_sh_iters}
+  reuse_u_v: True
+  n_mesh_iters: 4
