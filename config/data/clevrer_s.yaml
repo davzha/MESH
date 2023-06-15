@@ -1,9 +1,10 @@
 resolution: [64, 64]
 num_data_workers: 4
+max_objects: 7
+path: "~/data/object_discovery/clevrer_f0_f16.h5"
+paired: True
+keys: ["images", "images", "masks", "attributes"]
 cls: data.H5Records
-path: "~/data/object_discovery/mdsprites.h5"
-keys: ["images", "images", "masks"]
-max_objects: 5
 
 train:
   _target_: ${data.cls}
@@ -11,18 +12,24 @@ train:
   keys: ${data.keys}
   preload: True
   start: 0
-  end: 60000
+  end: 10000
+  ignore: [7648, 9777]
+  frame_ids: [0, -1]
 val:
   _target_: ${data.cls}
   path: ${data.path}
   keys: ${data.keys}
   preload: True
-  start: 60000
-  end: 60320
+  start: 10000
+  end: 10320
+  ignore: []
+  frame_ids: [0, -1]
 test:
   _target_: ${data.cls}
   path: ${data.path}
   keys: ${data.keys}
   preload: True
-  start: 60320
-  end: 63200
+  start: 15000
+  end: 20000
+  ignore: []
+  frame_ids: [0, -1]

@@ -3,7 +3,6 @@ import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 from einops import rearrange, reduce, repeat
-from torchvision.models.resnet import ResNet, BasicBlock
 
 
 @torch.jit.script
@@ -15,10 +14,14 @@ def sinkhorn(
     temperature: float = 1,
     u: Union[Tensor, None] = None,
     v: Union[Tensor, None] = None,
+    min_clamp: float = 1e-30,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     p = -C / temperature
-    log_a = torch.log(a)
-    log_b = torch.log(b)
+    
+    # NOTE: clamp to avoid -inf;
+    # exact value decides minimal attention per location/slot
+    log_a = torch.log(a.clamp(min=min_clamp))
+    log_b = torch.log(b.clamp(min=min_clamp))
 
     if u is None:
         u = torch.zeros_like(a)

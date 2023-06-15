@@ -1,5 +1,6 @@
+import math
 import torch
-from torch import nn, Tensor
+from torch import nn
 from torch.nn import functional as F
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
@@ -33,77 +34,81 @@ pairwise_distances = {
 
 
 class SlotAttentionVariant(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, d_in, d_slot, n_slots, d_mlp, attention_type, n_sa_iters, pairwise_distance, temperature,
+                scale_marginals, n_sh_iters, learn_mesh_lr, mesh_lr, init_slot_method, detach_slots, mesh_args):
         super().__init__()
-        self.cfg = cfg
-        # self.num_iterations = cfg.n_iters
-        # self.cfg.n_slots = cfg.n_slots
-        # self.cfg.d_slot = cfg.d_slot  # number of hidden layers in slot dimensions
-        # self.lambda_sh = cfg.lambda_sh
+        self.d_slot = d_slot
+        self.n_slots = n_slots
+        self.attention_type = attention_type
+        self.scale_marginals = scale_marginals
+        self.n_sa_iters = n_sa_iters
+        self.n_sh_iters = n_sh_iters
+        self.detach_slots = detach_slots
+        self.mesh_args = mesh_args
+        self.temperature = temperature
+        self.pairwise_distance = pairwise_distances[pairwise_distance]
 
-        self.pairwise_distance = pairwise_distances[cfg.pairwise_distance]
-
-        self.norm_inputs = nn.LayerNorm(cfg.d_in)
-        self.norm_slots = nn.LayerNorm(cfg.d_slot)
-        self.norm_mlp = nn.LayerNorm(cfg.d_slot)
+        self.norm_inputs = nn.LayerNorm(d_in)
+        self.norm_slots = nn.LayerNorm(d_slot)
+        self.norm_mlp = nn.LayerNorm(d_slot)
 
         # Linear maps for the attention module.
-        self.project_q = nn.Linear(cfg.d_slot, cfg.d_slot, bias=False)
-        self.project_k = nn.Linear(cfg.d_in, cfg.d_slot, bias=False)
-        self.project_v = nn.Linear(cfg.d_in, cfg.d_slot, bias=False)
+        self.project_q = nn.Linear(d_slot, d_slot, bias=False)
+        self.project_k = nn.Linear(d_in, d_slot, bias=False)
+        self.project_v = nn.Linear(d_in, d_slot, bias=False)
 
         # Slot update functions.
-        self.gru = nn.GRUCell(cfg.d_slot, cfg.d_slot)
+        self.gru = nn.GRUCell(d_slot, d_slot)
         self.mlp = nn.Sequential(
-            nn.Linear(cfg.d_slot, cfg.d_mlp),
+            nn.Linear(d_slot, d_mlp),
             nn.ReLU(),
-            nn.Linear(cfg.d_mlp, cfg.d_slot),
+            nn.Linear(d_mlp, d_slot),
         )
 
-        if cfg.attention_type.lower() != "original_slot_attention":
+        if attention_type.lower() != "original_slot_attention":
             self.mlp_slot_marginals = nn.Sequential(
-                nn.Linear(cfg.d_slot, cfg.d_mlp),
+                nn.Linear(d_slot, d_mlp),
                 nn.ReLU(),
-                nn.Linear(cfg.d_mlp, 1, bias=False),
+                nn.Linear(d_mlp, 1, bias=False),
             )
             self.mlp_input_marginals = nn.Sequential(
-                nn.Linear(cfg.d_in, cfg.d_mlp),
+                nn.Linear(d_in, d_mlp),
                 nn.ReLU(),
-                nn.Linear(cfg.d_mlp, 1, bias=False),
+                nn.Linear(d_mlp, 1, bias=False),
             )
-            if cfg.attention_type.lower() == "mesh":
+            if attention_type.lower() == "mesh":
                 self.lr = (
-                    nn.Parameter(torch.ones(1)) if cfg.learn_mesh_lr else cfg.mesh_lr
+                    nn.Parameter(torch.ones(1)) if learn_mesh_lr else mesh_lr
                 )
 
-        if cfg.init_slot_method == "learned_random":
-            self.slots_mu = nn.Parameter(torch.zeros((1, 1, cfg.d_slot)))
+        if init_slot_method == "learned_random":
+            self.slots_mu = nn.Parameter(torch.zeros((1, 1, d_slot)))
             nn.init.xavier_uniform_(
                 self.slots_mu, gain=nn.init.calculate_gain("linear")
             )
-            self.slots_log_sigma = nn.Parameter(torch.zeros((1, 1, cfg.d_slot)))
+            self.slots_log_sigma = nn.Parameter(torch.zeros((1, 1, d_slot)))
             nn.init.xavier_uniform_(
                 self.slots_log_sigma, gain=nn.init.calculate_gain("linear")
             )
-        elif cfg.init_slot_method == "fixed_random":
+        elif init_slot_method == "fixed_random":
             self.register_buffer(
                 "slots_mu",
                 nn.init.xavier_uniform_(
-                    torch.zeros((1, 1, cfg.d_slot)),
+                    torch.zeros((1, 1, d_slot)),
                     gain=nn.init.calculate_gain("linear"),
                 ),
             )
             self.register_buffer(
                 "slots_log_sigma",
                 nn.init.xavier_uniform_(
-                    torch.zeros((1, 1, cfg.d_slot)),
+                    torch.zeros((1, 1, d_slot)),
                     gain=nn.init.calculate_gain("linear"),
                 ),
             )
         else:
-            raise ValueError(f"Unknown init_slots: {cfg.init_slots}.")
+            raise ValueError(f"Unknown init_slots: {init_slot_method}.")
 
-    def forward(self, inputs: Tensor):
+    def forward(self, inputs, initial_slots = None):
         # `inputs` has shape [batch_size, num_inputs, d_input].
         batch_size, num_inputs, d_input = inputs.shape
         inputs = self.norm_inputs(inputs)
@@ -111,28 +116,31 @@ class SlotAttentionVariant(nn.Module):
         v = self.project_v(inputs)
 
         # Initialize the slots. Shape: [batch_size, num_slots, d_slots].
-        slots_init = torch.randn(
-            (batch_size, self.cfg.n_slots, self.cfg.d_slot),
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-        slots = self.slots_mu + self.slots_log_sigma.exp() * slots_init
+        if initial_slots is None:
+            slots_init = torch.randn(
+                (batch_size, self.n_slots, self.d_slot),
+                device=inputs.device,
+                dtype=inputs.dtype,
+            )
+            slots = self.slots_mu + self.slots_log_sigma.exp() * slots_init
+        else:
+            slots = initial_slots
 
-        attention_type = self.cfg.attention_type.lower()
+        attention_type = self.attention_type.lower()
         if attention_type != "original_slot_attention":
-            scale_marginals = self.cfg.scale_marginals
+            scale_marginals = self.scale_marginals
             a = scale_marginals * self.mlp_input_marginals(inputs).squeeze(2).softmax(
                 dim=1
             )
 
             if attention_type == "mesh":
                 noise = torch.randn(
-                    batch_size, num_inputs, self.cfg.n_slots, device=slots.device
+                    batch_size, num_inputs, self.n_slots, device=slots.device
                 )
             sh_u = sh_v = None
 
-        for i in range(self.cfg.n_sa_iters):
-            if self.cfg.detach_slots:
+        for i in range(self.n_sa_iters):
+            if self.detach_slots:
                 slots = slots.detach()
             slots_prev = slots
             slots = self.norm_slots(slots)
@@ -148,9 +156,9 @@ class SlotAttentionVariant(nn.Module):
 
             if attention_type == "mesh":
                 cost, sh_u, sh_v = minimize_entropy_of_sinkhorn(
-                    cost, a, b, noise=noise, mesh_lr=self.lr, **self.cfg.mesh_args
+                    cost, a, b, noise=noise, mesh_lr=self.lr, **self.mesh_args
                 )
-                if not self.cfg.mesh_args.reuse_u_v:
+                if not self.mesh_args.reuse_u_v:
                     sh_v = sh_u = None
                 attn, *_ = sinkhorn(
                     cost,
@@ -158,8 +166,8 @@ class SlotAttentionVariant(nn.Module):
                     b,
                     u=sh_u,
                     v=sh_v,
-                    n_sh_iters=self.cfg.n_sh_iters,
-                    temperature=self.cfg.temperature,
+                    n_sh_iters=self.n_sh_iters,
+                    temperature=self.temperature,
                 )
 
             elif attention_type == "sinkhorn":
@@ -167,8 +175,8 @@ class SlotAttentionVariant(nn.Module):
                     cost,
                     a,
                     b,
-                    n_sh_iters=self.cfg.n_sh_iters,
-                    temperature=self.cfg.temperature,
+                    n_sh_iters=self.n_sh_iters,
+                    temperature=self.temperature,
                 )[0]
 
             elif attention_type == "original_slot_attention":
@@ -177,14 +185,14 @@ class SlotAttentionVariant(nn.Module):
                 attn = attn / torch.sum(attn, dim=1, keepdim=True)
 
             else:
-                raise ValueError(f"unknown attention type {self.cfg.ot_mode}")
+                raise ValueError(f"unknown attention type {attention_type}")
             updates = torch.matmul(attn.transpose(1, 2), v)
 
             slots = self.gru(
-                updates.view(batch_size * self.cfg.n_slots, self.cfg.d_slot),
-                slots_prev.view(batch_size * self.cfg.n_slots, self.cfg.d_slot),
+                updates.view(batch_size * self.n_slots, self.d_slot),
+                slots_prev.view(batch_size * self.n_slots, self.d_slot),
             )
-            slots = slots.view(batch_size, self.cfg.n_slots, self.cfg.d_slot)
+            slots = slots.view(batch_size, self.n_slots, self.d_slot)
             slots = slots + self.mlp(self.norm_mlp(slots))
 
         return slots
@@ -258,19 +266,11 @@ class CNNDecoder(nn.Sequential):
 
 
 class SlotAttentionObjectDiscovery(nn.Module):
-    def __init__(self, cfg) -> None:
+    def __init__(self, encoder, decoder, slot_attention):
         super().__init__()
-        self.encoder = CNNEncoder(
-            cfg.encoder.d_hid,
-            cfg.encoder.d_out,
-            cfg.encoder.resolution,
-        )
-        self.decoder = CNNDecoder(
-            cfg.decoder.d_in,
-            cfg.decoder.d_hid,
-            cfg.decoder.broadcast_resolution,
-        )
-        self.slot_attention = SlotAttentionVariant(cfg.slot_attention)
+        self.encoder = CNNEncoder(**encoder)
+        self.decoder = CNNDecoder(**decoder)
+        self.slot_attention = SlotAttentionVariant(**slot_attention)
 
     def forward(self, x):
         bsz, c, h, w = x.shape
@@ -283,3 +283,76 @@ class SlotAttentionObjectDiscovery(nn.Module):
         reconstruction = (rgb_channels * alpha_masks).sum(dim=1)
 
         return reconstruction, rgb_channels, alpha_masks, slots
+    
+
+class TransitionWrapper(nn.Module):
+    def __init__(self, slot_model, d_slot, noise_sigma=0., learned_noise=False, learned_noise_var=0.1):
+        super().__init__()
+        assert noise_sigma == 0. or ~learned_noise, "can't have both learned and fixed noise"
+        self.slot_model = slot_model
+        self.noise_sigma = noise_sigma
+        self.learned_noise = learned_noise
+        self.learned_noise_var = learned_noise_var
+
+        if learned_noise:
+            self.noise_mlp = nn.Sequential(
+                nn.LayerNorm(d_slot),
+                nn.Linear(d_slot, d_slot),
+                nn.ReLU(),
+                nn.Linear(d_slot, 2*d_slot),
+            )
+        self.d_slot = d_slot
+
+    def forward(self, x):
+        # x has shape (batch, time, set, ...)
+        timesteps = x.size(1)
+        all_slots = []
+        slots = None
+        reg_loss = 0.
+
+        for i in range(timesteps):
+            if slots is not None:
+                # optionally add noise to separate slots
+                if self.noise_sigma > 0.:
+                    slots = slots + self.noise_sigma * torch.randn_like(slots)
+                elif self.learned_noise:
+                    normal_param = self.noise_mlp(slots)
+                    mu = normal_param[..., :self.d_slot]
+                    log_var = normal_param[..., self.d_slot:]
+                    slots = mu + torch.randn_like(slots) * torch.exp(log_var)
+                    loss_kl = math.log(math.sqrt(self.learned_noise_var)) - 0.5*log_var + 0.5*log_var.exp()/self.learned_noise_var - 0.5
+                    reg_loss = reg_loss + loss_kl.mean()
+
+            slots = self.slot_model(x[:, i], initial_slots=slots)
+            all_slots.append(slots)
+
+
+        return torch.stack(all_slots, dim=1), reg_loss
+    
+
+class SlotAttentionObjectDiscoveryVideo(nn.Module):
+    def __init__(self, encoder, decoder, slot_attention, transition_wrapper):
+        super().__init__()
+        self.encoder = CNNEncoder(**encoder)
+        self.decoder = CNNDecoder(**decoder)
+        self.slot_attention = TransitionWrapper(SlotAttentionVariant(**slot_attention), **transition_wrapper)
+
+    def forward(self, x):
+        bsz, time, c, h, w = x.shape
+
+        x = x.flatten(0, 1)
+        x = self.encoder(x)
+        x = x.view(bsz, time, *x.size()[1:])
+
+        slots, reg_loss = self.slot_attention(x)
+        # n_slots = slots.size(-1)
+        # slots = repeat(slots, "b t n c -> (b t n) c w h", w=w, h=h).contiguous()
+        # x = slots.flatten(0,1)[:,:,None,None].expand(bsz*time*n_slots, slots.size(-1), w, h)
+        slots = slots.flatten(0,1)
+        x = self.decoder(slots)
+        x = rearrange(x, "(b t n) c h w -> b t n c h w", b=bsz, t=time)
+        rgb_channels, alpha_masks = x.split((c, 1), dim=-3)
+        alpha_masks = alpha_masks.softmax(dim=2)
+        reconstruction = (rgb_channels * alpha_masks).sum(dim=2)
+
+        return reconstruction, rgb_channels, alpha_masks, slots, reg_loss

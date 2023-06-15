@@ -1,6 +1,6 @@
 defaults:
   - data: mdsprites
-  - model: default
+  - model: video
   - _self_
 
 project: "mdsprites"
@@ -13,9 +13,9 @@ tf32: False
 compile: False
 cudnn_benchmark: True
 eval_only: False
+batch_size: 64
 
 opt:
-  batch_size: 64
   lr: 4e-4
   epochs: 530
   n_gpus: 1

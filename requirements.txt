@@ -1,0 +1,11 @@
+-f https://download.pytorch.org/whl/cu118
+torch
+-f https://download.pytorch.org/whl/cu118
+torchvision
+hydra-core
+wandb
+h5py
+pytorch-lightning
+matplotlib
+einops
+scipy

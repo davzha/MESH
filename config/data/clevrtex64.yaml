@@ -1,28 +1,28 @@
 resolution: [64, 64]
 num_data_workers: 4
-cls: data.H5Records
-path: "~/data/object_discovery/mdsprites.h5"
+path: "~/data/object_discovery/clevrtex64.h5"
+max_objects: 10
 keys: ["images", "images", "masks"]
-max_objects: 5
+cls: data.H5Records
 
 train:
   _target_: ${data.cls}
   path: ${data.path}
   keys: ${data.keys}
   preload: True
-  start: 0
-  end: 60000
+  start: 10000
+  end: 50000
 val:
   _target_: ${data.cls}
   path: ${data.path}
   keys: ${data.keys}
   preload: True
-  start: 60000
-  end: 60320
+  start: 5000
+  end: 5320
 test:
   _target_: ${data.cls}
   path: ${data.path}
   keys: ${data.keys}
   preload: True
-  start: 60320
-  end: 63200
+  start: 0
+  end: 5000

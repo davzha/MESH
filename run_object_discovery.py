@@ -23,36 +23,27 @@ class ObjectDiscoveryModel(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(cfg)
         self.net = self.get_model()
-        self.trainset = data.H5Records(
-            cfg.data.path,
-            *cfg.data.train_split,
-            ["images", "images", "masks"],
-            preload=cfg.data.train_preload,
-        )
-        self.valset = data.H5Records(
-            cfg.data.path,
-            *cfg.data.val_split,
-            ["images", "images", "masks"],
-            preload=cfg.data.val_preload,
-        )
-        self.testset = data.H5Records(
-            cfg.data.path,
-            *cfg.data.test_split,
-            ["images", "images", "masks"],
-            preload=cfg.data.test_preload,
-        )
+        self.trainset = hydra.utils.instantiate(cfg.data.train)
+        self.valset = hydra.utils.instantiate(cfg.data.val)
+        self.testset = hydra.utils.instantiate(cfg.data.test)
 
     def get_model(self):
-        net = slot_attention.SlotAttentionObjectDiscovery(self.hparams.model)
+        net = hydra.utils.instantiate(self.hparams.model)
         if self.hparams.compile:
             net = torch.compile(net)
         return net
 
     def forward(self, x):
-        input, gt_output, gt_masks = x
-        output, _, masks, *_ = self.net(input)
+        if len(x) == 3:
+            input, gt_output, gt_masks = x
+            attributes = None
+            reg_loss = 0.0
+            output, _, masks, *_ = self.net(input)
+        else:
+            input, gt_output, gt_masks, attributes = x
+            output, _, masks, *_, reg_loss = self.net(input)
 
-        return output, gt_output, masks, gt_masks
+        return output, gt_output, masks, gt_masks, attributes, reg_loss
 
     def training_step(self, batch, batch_idx):
         return self.step(batch, batch_idx, "/train")
@@ -64,23 +55,35 @@ class ObjectDiscoveryModel(pl.LightningModule):
         return self.step(batch, batch_idx, "/test")
 
     def step(self, batch, batch_idx, suffix):
-        output, gt_output, masks, gt_masks = self(batch)
+        output, gt_output, masks, gt_masks, attributes, reg_loss = self(batch)
+
+        # if gt_output.ndim == 5:
+        #     n_frames = gt_output.size(1)
+        #     gt_output = gt_output.flatten(0, 1)
+        #     gt_masks = gt_masks.flatten(0, 1)
 
         loss = F.mse_loss(output, gt_output)
+        loss = loss + reg_loss
 
         ari = losses.adjusted_rand_index(
-            gt_masks.flatten(2).transpose(-1, -2),
-            masks.flatten(2).transpose(-1, -2),
+            rearrange(gt_masks, "... n 1 h w -> ... (h w) n"),
+            rearrange(masks, "... n 1 h w -> ... (h w) n"),
         ).mean()
 
         log_dict = dict(loss=loss, ari=ari)
 
         if not self.training:
             miou = losses.compute_IoU(
-                pred_mask=rearrange(masks, "b n 1 h w -> b n (h w)"),
-                gt_mask=rearrange(gt_masks, "b n 1 h w-> b n (h w)"),
+                pred_mask=rearrange(masks, "... 1 h w -> ... (h w)"),
+                gt_mask=rearrange(gt_masks, "... 1 h w-> ... (h w)"),
             )
             log_dict["miou"] = miou.mean()
+
+            tca = losses.time_consistency_accuracy(
+                pred_mask=rearrange(masks, "... n 1 h w -> ... (h w) n"),
+                gt_mask=rearrange(gt_masks, "... n 1 h w-> ... (h w) n"), 
+                attributes=attributes)
+            log_dict["tca"] = tca.mean()
 
         if batch_idx % self.hparams.log_img_freq == 0:
             self.plot_progress(
@@ -116,7 +119,7 @@ class ObjectDiscoveryModel(pl.LightningModule):
     def train_dataloader(self):
         return DataLoader(
             self.trainset,
-            batch_size=self.hparams.opt.batch_size,
+            batch_size=self.hparams.batch_size,
             shuffle=True,
             num_workers=self.hparams.data.num_data_workers,
         )
@@ -124,7 +127,7 @@ class ObjectDiscoveryModel(pl.LightningModule):
     def val_dataloader(self):
         return DataLoader(
             self.valset,
-            batch_size=self.hparams.opt.batch_size,
+            batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=self.hparams.data.num_data_workers,
         )
@@ -132,12 +135,17 @@ class ObjectDiscoveryModel(pl.LightningModule):
     def test_dataloader(self):
         return DataLoader(
             self.testset,
-            batch_size=self.hparams.opt.batch_size,
+            batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=self.hparams.data.num_data_workers,
         )
 
     def plot_progress(self, pred, masks, gt, n_examples=4, suffix=""):
+        if pred.ndim == 5:
+            # n_frames = pred.size(1)
+            pred = pred.flatten(0, 1)
+            masks = masks.flatten(0, 1)
+            gt = gt.flatten(0, 1)
         pred = pred.cpu().detach().permute(0, 2, 3, 1) + 1
         pred = (pred / 2).clamp(0, 1)
         masks = masks.cpu().detach()
@@ -210,9 +218,7 @@ def test(cfg, trainer=None):
     trainer.test(ckpt_path=ckpt_path)
 
 
-@hydra.main(
-    config_path="config", config_name="object_discovery.yaml", version_base=None
-)
+@hydra.main(config_path="config", config_name="object_discovery.yaml", version_base=None)
 def main(cfg):
     pl.seed_everything(cfg.seed)
     if cfg.cudnn_benchmark:

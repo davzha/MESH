@@ -1,6 +1,8 @@
 defaults:
   - slot_attention: mesh
 
+_target_: slot_attention.SlotAttentionObjectDiscovery
+
 encoder:
   d_hid: 32
   d_out: 32
@@ -8,5 +10,5 @@ encoder:
 
 decoder:
   broadcast_resolution: [64, 64]
-  d_in: ${model.slot_attention.d_slot}
+  d_slot: ${model.slot_attention.d_slot}
   d_hid: 32

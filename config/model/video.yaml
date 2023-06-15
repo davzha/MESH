@@ -1,0 +1,20 @@
+defaults:
+  - slot_attention: mesh
+
+_target_: slot_attention.SlotAttentionObjectDiscoveryVideo
+
+encoder:
+  d_hid: 32
+  d_out: 32
+  resolution: [64, 64]
+
+decoder:
+  broadcast_resolution: [64, 64]
+  d_slot: ${model.slot_attention.d_slot}
+  d_hid: 32
+
+transition_wrapper:
+  d_slot: ${model.slot_attention.d_slot}
+  noise_sigma: 0.0
+  learned_noise: False
+  learned_noise_var: False
