@@ -1,6 +1,6 @@
 defaults:
   - data: mdsprites
-  - model: video
+  - model: image
   - _self_
 
 project: "mdsprites"
@@ -15,10 +15,14 @@ cudnn_benchmark: True
 eval_only: False
 batch_size: 64
 
+trainer:
+  max_epochs: 530
+  devices: 1
+  accelerator: auto
+  gradient_clip_val: 0.1
+  gradient_clip_algorithm: norm
+  inference_mode: False
+
 opt:
   lr: 4e-4
-  epochs: 530
-  n_gpus: 1
-  grad_clip: 0.1
-  track_grad_norm: -1
   use_lr_scheduler: True

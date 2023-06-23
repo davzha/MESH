@@ -48,7 +48,7 @@ class H5Records(torch.utils.data.Dataset):
         result = [torch.from_numpy(x).float() for x in result]
 
         # normalize CHW image to be in [-1, 1]
-        result = [x if x.dim() >= 4 else x / 255 * 2 - 1 for x in result[:2]] + result[2:]  
+        result = [x / 255 * 2 - 1 for x in result[:2]] + result[2:]  
 
         if self.transform:
             result = [self.transform(x) for x in result]

@@ -35,12 +35,13 @@ pairwise_distances = {
 
 class SlotAttentionVariant(nn.Module):
     def __init__(self, d_in, d_slot, n_slots, d_mlp, attention_type, n_sa_iters, pairwise_distance, temperature,
-                scale_marginals, n_sh_iters, learn_mesh_lr, mesh_lr, init_slot_method, detach_slots, mesh_args):
+                scale_marginals, scale_cost, n_sh_iters, learn_mesh_lr, mesh_lr, init_slot_method, detach_slots, mesh_args):
         super().__init__()
         self.d_slot = d_slot
         self.n_slots = n_slots
         self.attention_type = attention_type
         self.scale_marginals = scale_marginals
+        self.scale_cost = scale_cost
         self.n_sa_iters = n_sa_iters
         self.n_sh_iters = n_sh_iters
         self.detach_slots = detach_slots
@@ -147,7 +148,7 @@ class SlotAttentionVariant(nn.Module):
 
             q = self.project_q(slots)
 
-            cost = self.pairwise_distance(k, q)
+            cost = self.scale_cost * self.pairwise_distance(k, q)
 
             if attention_type != "original_slot_attention":
                 b = scale_marginals * self.mlp_slot_marginals(slots).squeeze(2).softmax(

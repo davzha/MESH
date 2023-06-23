@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn.functional as F
-from einops import rearrange, repeat
+from einops import rearrange, repeat, reduce
 
 
 def pairwise_IoU(pred_mask, gt_mask):
@@ -43,6 +43,7 @@ def compute_IoU(pred_mask, gt_mask):
     indices_ = pred_mask.size(-2) * indices[:, 0] + indices[:, 1]
     indices_ = torch.from_numpy(indices_).to(device=pred_mask.device)
     IoU = torch.gather(rearrange(pIoU, "... n m -> ... (n m)"), 1, indices_)
+    IoU[is_padding] = 0
     mIoU = (IoU * ~is_padding).sum(-1) / (~is_padding).sum(-1)
     if time is not None:
         mIoU = rearrange(mIoU, "(b t) -> b t", t=time)
@@ -85,34 +86,50 @@ def adjusted_rand_index(true_mask, pred_mask):
 
 def all_equal(values, mask):
     """mask[...] == True iff it should be ignored"""
-    ref_val = torch.gather(values, 1, mask.float().argmin(dim=1).unsqueeze(1))
+    if values.ndim == 3:
+        time = values.size(1)
+        values = rearrange(values, "b t n -> (b t) n")
+        mask = rearrange(mask, "b t n -> (b t) n")
+    else:
+        time = None
+    ref_val = torch.gather(values, 1, mask.float().argmin(dim=-1).unsqueeze(1))
     eq = values == ref_val
     eq = torch.logical_or(eq, mask)
-    return torch.all(eq, dim=-1)
+    eq = torch.all(eq, dim=-1)
+    if time is not None:
+        eq = rearrange(eq, "(b t) -> b t", t=time)
+    return eq
 
 
 def time_consistency_accuracy(pred_mask, gt_mask, attributes):
-    # discretize mask
-    pred_mask_disc = F.one_hot(torch.argmax(pred_mask, -1), pred_mask.shape[-1]).to(torch.float32)
+    # pred_mask: b t m hw
+    # gt_mask: b t n hw
+    is_padding = (gt_mask == 0).all(-1)
 
-    # assign the corresponding slot to each GT object based on the similarity between the GT mask and the predicted mask
-    _, results = hungarian_loss(
-        rearrange(pred_mask_disc, "b t c n -> (b t) n c"), 
-        rearrange(gt_mask, "b t c n -> (b t) n c"))
-    indices = torch.from_numpy(results['indices']).to(device=pred_mask.device)
+    # discretized 2d mask for hungarian matching
+    pred_mask_id = torch.argmax(pred_mask, -2)
+    pred_mask_disc = rearrange(
+        F.one_hot(pred_mask_id, pred_mask.size(2)).to(torch.float32),
+        "... c n -> ... n c")
+
+    # treat as if no padding in gt_mask
+    pIoU = pairwise_IoU(pred_mask_disc.bool(), gt_mask.bool())
+    pIoU_inv = 1 - pIoU
+    pIoU_inv[is_padding] = 1e3
+    pIoU_inv_ = rearrange(pIoU_inv, "b t n m -> (b t) n m").detach().cpu().numpy()
+    indices = np.array([linear_sum_assignment(p) for p in pIoU_inv_])
+    indices = torch.from_numpy(indices).to(device=pred_mask.device)
     slot_id = rearrange(indices[:, -1], "(b t) n -> b t n", b=pred_mask.shape[0])
 
     # check which objects are the same in the two frames modulo padding
     same_obj = (rearrange(attributes[:,0], "b n c -> b n 1 c") == rearrange(attributes[:,1], "b n c -> b 1 n c")).all(-1)
-    is_padding = (attributes == 0).all(-1)
     is_padding = rearrange(is_padding[:,0], "b n -> b n 1") | rearrange(is_padding[:,1], "b n -> b 1 n")
     same_obj = same_obj & ~is_padding
 
     # compute accuracy and catch the cases where there are no overlaps between the two frames
     true_pos = same_obj & (rearrange(slot_id[:,0], "b n -> b n 1") == rearrange(slot_id[:,1], "b n -> b 1 n"))
-    n_overlaps = same_obj.sum()
-    acc = (true_pos.sum() / n_overlaps).mean()
-    acc = torch.where(n_overlaps == 0, torch.tensor(1.0, device=pred_mask.device), acc)
+    n_overlaps = reduce(same_obj, "b n m -> b", "sum")
+    acc = reduce(true_pos, "b n m -> b", "sum") / n_overlaps
     return acc
 
 

@@ -18,3 +18,8 @@ transition_wrapper:
   noise_sigma: 0.0
   learned_noise: False
   learned_noise_var: False
+
+slot_attention:
+  pairwise_distance: cosine
+  scale_cost: 6
+  scale_marginals: 18

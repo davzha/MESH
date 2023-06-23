@@ -79,11 +79,13 @@ class ObjectDiscoveryModel(pl.LightningModule):
             )
             log_dict["miou"] = miou.mean()
 
-            tca = losses.time_consistency_accuracy(
-                pred_mask=rearrange(masks, "... n 1 h w -> ... (h w) n"),
-                gt_mask=rearrange(gt_masks, "... n 1 h w-> ... (h w) n"), 
-                attributes=attributes)
-            log_dict["tca"] = tca.mean()
+            if len(batch) > 3:
+                tca = losses.time_consistency_accuracy(
+                    pred_mask=rearrange(masks, "... n 1 h w -> ... n (h w)"),
+                    gt_mask=rearrange(gt_masks, "... n 1 h w -> ... n (h w)"),
+                    attributes=attributes
+                )
+                log_dict["tca"] = tca.mean()
 
         if batch_idx % self.hparams.log_img_freq == 0:
             self.plot_progress(
@@ -192,17 +194,12 @@ def train(cfg):
     wandb.config.update(cfg)
 
     trainer = pl.Trainer(
-        max_epochs=cfg.opt.epochs,
-        gpus=cfg.opt.n_gpus,
-        num_nodes=1,
+        **cfg.trainer,
         logger=logger,
         callbacks=[
             ModelCheckpoint(monitor="loss/val", save_last=True),
             LearningRateMonitor(),
         ],
-        gradient_clip_val=cfg.opt.grad_clip,
-        track_grad_norm=cfg.opt.track_grad_norm,
-        inference_mode=False,
     )
     trainer.fit(
         model, ckpt_path=Path(cfg.ckpt_path).resolve() if cfg.ckpt_path else None

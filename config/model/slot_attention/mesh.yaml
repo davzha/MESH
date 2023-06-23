@@ -11,6 +11,7 @@ init_slot_method: learned_random
 learn_mesh_lr: False
 mesh_lr: 8
 scale_marginals: ${model.slot_attention.n_slots}
+scale_cost: 1
 temperature: 1
 detach_slots: False
 
