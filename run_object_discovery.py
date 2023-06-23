@@ -12,11 +12,13 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 import hydra
 import wandb
 
-import data
 import losses
-import slot_attention
 from lr_scheduler import SA_LRScheduler
 
+
+def robust_mean(x):
+    x = x[torch.isfinite(x)]
+    return x.mean()
 
 class ObjectDiscoveryModel(pl.LightningModule):
     def __init__(self, cfg):
@@ -68,7 +70,8 @@ class ObjectDiscoveryModel(pl.LightningModule):
         ari = losses.adjusted_rand_index(
             rearrange(gt_masks, "... n 1 h w -> ... (h w) n"),
             rearrange(masks, "... n 1 h w -> ... (h w) n"),
-        ).mean()
+        )
+        ari = robust_mean(ari)
 
         log_dict = dict(loss=loss, ari=ari)
 
@@ -77,7 +80,7 @@ class ObjectDiscoveryModel(pl.LightningModule):
                 pred_mask=rearrange(masks, "... 1 h w -> ... (h w)"),
                 gt_mask=rearrange(gt_masks, "... 1 h w-> ... (h w)"),
             )
-            log_dict["miou"] = miou.mean()
+            log_dict["miou"] = robust_mean(miou)
 
             if len(batch) > 3:
                 tca = losses.time_consistency_accuracy(
@@ -85,7 +88,7 @@ class ObjectDiscoveryModel(pl.LightningModule):
                     gt_mask=rearrange(gt_masks, "... n 1 h w -> ... n (h w)"),
                     attributes=attributes
                 )
-                log_dict["tca"] = tca.mean()
+                log_dict["tca"] = robust_mean(tca)
 
         if batch_idx % self.hparams.log_img_freq == 0:
             self.plot_progress(
