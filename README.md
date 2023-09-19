@@ -11,25 +11,25 @@ To run the experiments, first prepare the data with the instructions provided in
 mdsprites:
 
 ```
-python run_object_discovery.py data=mdsprites model=image model.slot_attention=mesh
+python run_object_discovery.py data=mdsprites model=image model/slot_attention=mesh
 ```
 
 ClevrTex:
 
 ```
-python run_object_discovery.py data=clevrtex64 model=image model.slot_attention=mesh
+python run_object_discovery.py data=clevrtex64 model=image model/slot_attention=mesh
 ```
 
 CLEVRER-S:
 
 ```
-python run_object_discovery.py data=clevrer_s model=video model.slot_attention=mesh
+python run_object_discovery.py data=clevrer_s model=video model/slot_attention=mesh
 ```
 
 CLEVRER-L:
 
 ```
-python run_object_discovery.py data=clevrer_l model=video model.slot_attention=mesh
+python run_object_discovery.py data=clevrer_l model=video model/slot_attention=mesh
 ```
 
 
